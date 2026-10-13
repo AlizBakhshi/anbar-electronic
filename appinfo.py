@@ -5,7 +5,7 @@ import sys
 APP_NAME = "انبار الکترونیک"
 APP_ID = "AnbarElectronic.App"      # شناسه‌ی ویندوز برای تسک‌بار (همان مقدار در نصب‌کننده)
 DATA_FOLDER = "AnbarElectronic"
-VERSION = "1.0.1"
+VERSION = "1.0.2"
 
 
 def base_dir():

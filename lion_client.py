@@ -184,12 +184,17 @@ class LionClient:
         self._dump("login_failed", r.text)
         raise LoginError("ورود به سایت ناموفق بود.")
 
-    def fetch_order_list(self):
-        """همه‌ی صفحه‌های لیست سفارش‌ها را می‌خواند."""
+    def fetch_order_list(self, limit=None, known=None, progress=None, cancelled=None):
+        """صفحه‌های لیست سفارش‌ها (جدیدترین اول) را می‌خواند.
+        limit: حداکثر تعداد سفارش (None = همه). با limit، اگر یک صفحه‌ی کامل از سفارش‌های قبلاً ثبت‌شده
+        (known) بود، بقیه‌ی صفحه‌ها خوانده نمی‌شوند. progress(page, found) بعد از هر صفحه صدا زده می‌شود."""
         if not self.logged_in:
             self.login()
         orders, seen = [], set()
+        known = known or set()
         for page in range(1, MAX_PAGES + 1):
+            if cancelled and cancelled():
+                break
             r = self._get(ORDERS_URL, params={"page": page})
             if self._is_login_page(r):
                 raise LoginError("نشست منقضی شد؛ دوباره تلاش کنید.")
@@ -202,7 +207,14 @@ class LionClient:
             for o in found:
                 seen.add(o["code"])
             orders.extend(found)
-        self.log(f"{len(orders)} سفارش در حساب کاربری پیدا شد.")
+            if progress:
+                progress(page, len(orders))
+            if limit and len(orders) >= limit:
+                orders = orders[:limit]
+                break
+            if limit and all(o["code"] in known for o in found):
+                break
+        self.log(f"{len(orders)} سفارش از حساب کاربری خوانده شد.")
         return orders
 
     def add_to_cart(self, product_id, quantity):

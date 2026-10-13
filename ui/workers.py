@@ -10,16 +10,22 @@ from db import Database, now
 
 
 class SyncWorker(QThread):
-    """ورود به حساب لیون و دریافت سفارش‌های جدید."""
+    """ورود به حساب لیون و دریافت سفارش‌های جدید.
+    step(stage, done, total, text): stage ۱ = ورود، ۲ = لیست سفارش‌ها، ۳ = جزئیات سفارش‌های جدید، ۴ = پایان."""
     log = Signal(str)
+    step = Signal(int, int, int, str)
     need_captcha = Signal(bytes)
     done = Signal(list, str, bool)  # new_order_ids, error, silent
 
-    def __init__(self, user, pwd, silent=False):
+    def __init__(self, user, pwd, silent=False, limit=None):
         super().__init__()
-        self.user, self.pwd, self.silent = user, pwd, silent
+        self.user, self.pwd, self.silent, self.limit = user, pwd, silent, limit
         self._captcha_event = threading.Event()
         self._captcha_text = ""
+        self._cancel = False
+
+    def cancel(self):
+        self._cancel = True
 
     def provide_captcha(self, text):
         self._captcha_text = text
@@ -36,15 +42,34 @@ class SyncWorker(QThread):
         new_ids, error = [], ""
         try:
             client = lion.LionClient(self.user, self.pwd, captcha_callback=self._ask_captcha, log=self.log.emit)
-            self.log.emit("در حال ورود به حساب لیون…")
+            self.step.emit(1, 0, 0, "در حال ورود به حساب لیون…")
             client.login()
-            self.log.emit("در حال خواندن لیست سفارش‌ها…")
-            for o in client.fetch_order_list():
+            limit_txt = f"{self.limit} سفارش آخر" if self.limit else "همه‌ی سفارش‌ها"
+            self.step.emit(2, 0, 0, f"در حال خواندن لیست سفارش‌ها ({limit_txt})…")
+            known = {r[0] for r in db.conn.execute("SELECT order_code FROM lion_orders")}
+            orders = client.fetch_order_list(
+                self.limit, known,
+                progress=lambda page, n: self.step.emit(2, page, 0, f"صفحه‌ی {page} لیست سفارش‌ها — {n} سفارش تا اینجا"),
+                cancelled=lambda: self._cancel)
+            fresh = []
+            for o in orders:
                 if db.order_exists(o["code"]):
                     db.update_order_info(o)
-                    continue
-                self.log.emit(f"دریافت جزئیات سفارش {o['code']}…")
+                else:
+                    fresh.append(o)
+            total = len(fresh)
+            self.step.emit(3, 0, total, f"{total} سفارش جدید پیدا شد" if total else "سفارش جدیدی نیست")
+            # قدیمی‌ترها اول ذخیره شوند تا ترتیب ثبت درست باشد
+            for i, o in enumerate(reversed(fresh), 1):
+                if self._cancel:
+                    break
+                self.step.emit(3, i - 1, total, f"دریافت جزئیات سفارش {o['code']}  ({i} از {total})")
                 new_ids.append(db.save_order(o, client.fetch_order_items(o)))
+                self.step.emit(3, i, total, f"سفارش {o['code']} ذخیره شد  ({i} از {total})")
+            if self._cancel:
+                self.step.emit(4, len(new_ids), total, f"متوقف شد — {len(new_ids)} سفارش ذخیره شد")
+            else:
+                self.step.emit(4, total, total, "تمام شد")
         except lion.LoginError as e:
             error = str(e)
         except Exception as e:  # noqa: BLE001

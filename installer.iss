@@ -2,7 +2,7 @@
 ; پیش‌نیاز: اول exe را با PyInstaller بسازید (پوشه‌ی dist\AnbarElectronic).
 
 #define AppName "انبار الکترونیک"
-#define AppVersion "1.0.1"
+#define AppVersion "1.0.2"
 #define AppExe "AnbarElectronic.exe"
 
 [Setup]

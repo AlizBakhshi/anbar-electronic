@@ -1,13 +1,17 @@
 """صفحه‌ی سفارش‌های لیون."""
+import time
 import webbrowser
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QHBoxLayout, QMenu, QProgressBar, QSplitter, QVBoxLayout, QWidget
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtWidgets import QComboBox, QHBoxLayout, QMenu, QProgressBar, QSplitter, QVBoxLayout, QWidget
 
 from db import ORDER_IGNORED, ORDER_IN_STOCK, ORDER_PENDING
 from ..theme import icon
 from ..widgets import (Button, Card, Col, DataTable, PageHeader, SearchBox, Segment, confirm, first_part, fmt_int,
                        label, toast)
+
+LIMITS = [("10", "۱۰ سفارش آخر"), ("20", "۲۰ سفارش آخر"), ("50", "۵۰ سفارش آخر"), ("0", "همه‌ی سفارش‌ها")]
+STEPS = ["ورود به حساب", "خواندن لیست سفارش‌ها", "دریافت جزئیات سفارش‌های جدید"]
 
 STATE = {ORDER_PENDING: ("در انتظار تصمیم", "warning"), ORDER_IN_STOCK: ("وارد انبار شد", "success"),
          ORDER_IGNORED: ("وارد نمی‌شود", "muted")}
@@ -23,13 +27,49 @@ class OrdersPage(QWidget):
         self.header = PageHeader("سفارش‌های لیون", "سفارش‌ها از حساب کاربری شما در lionelectronic.ir خوانده می‌شوند")
         self.sync_btn = Button("بررسی سفارش‌های جدید", "refresh", "Primary", tip="F5")
         self.sync_btn.clicked.connect(lambda: app.start_sync())
-        self.header.add(self.sync_btn)
+        self.limit = QComboBox()
+        for v, t in LIMITS:
+            self.limit.addItem(t, v)
+        self.limit.setToolTip("چند سفارش آخر از سایت خوانده شود؛ هر چه کمتر، سریع‌تر.\n"
+                              "با محدودیت، اگر سفارش‌ها قبلاً دریافت شده باشند خواندن زودتر تمام می‌شود.")
+        self.limit.setCurrentIndex(max(0, self.limit.findData(self.db.get_setting("lion_order_limit", "20"))))
+        self.limit.currentIndexChanged.connect(
+            lambda _: self.db.set_setting("lion_order_limit", self.limit.currentData()))
+        self.header.add(self.limit, self.sync_btn)
         root.addWidget(self.header)
+
+        # پنل پیشرفت: مرحله‌ها، نوار پیشرفت، زمان سپری‌شده و توقف
+        self.sync_card = Card(padding=14)
+        self.sync_card.lay.setSpacing(8)
+        srow = QHBoxLayout()
+        srow.setSpacing(18)
+        self.step_lbls = []
+        for i, t in enumerate(STEPS, 1):
+            lb = label(f"○  {i}. {t}", "Faint")
+            self.step_lbls.append(lb)
+            srow.addWidget(lb)
+        srow.addStretch(1)
+        self.elapsed = label("", "Faint")
+        srow.addWidget(self.elapsed)
+        self.stop_btn = Button("توقف", "x", "Danger",
+                               tip="بعد از سفارشِ در حال دریافت متوقف می‌شود؛ سفارش‌های دریافت‌شده می‌مانند")
+        self.stop_btn.clicked.connect(self.stop_sync)
+        srow.addWidget(self.stop_btn)
+        self.sync_card.lay.addLayout(srow)
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)
         self.progress.setTextVisible(False)
-        self.progress.hide()
-        root.addWidget(self.progress)
+        self.progress.setFixedHeight(8)
+        self.progress.setLayoutDirection(Qt.LeftToRight)
+        self.progress.setInvertedAppearance(True)   # پر شدن از راست، هم‌جهت با متن
+        self.sync_card.lay.addWidget(self.progress)
+        self.step_text = label("", "Muted")
+        self.sync_card.lay.addWidget(self.step_text)
+        self.sync_card.hide()
+        root.addWidget(self.sync_card)
+        self._t0 = 0.0
+        self._clock = QTimer(self)
+        self._clock.timeout.connect(self._tick)
 
         bar = QHBoxLayout()
         bar.setSpacing(8)
@@ -101,12 +141,61 @@ class OrdersPage(QWidget):
         shortcut(self, ["Ctrl+Return", "Ctrl+Enter"], self.to_stock)
         shortcut(self, "Delete", self.delete)
 
+    def limit_value(self):
+        return int(self.limit.currentData() or 0) or None
+
     def set_syncing(self, on, text=""):
-        self.progress.setVisible(on)
         self.sync_btn.setEnabled(not on)
+        self.limit.setEnabled(not on)
         self.sync_btn.setText("در حال بررسی…" if on else "بررسی سفارش‌های جدید")
+        if on:
+            self._t0 = time.monotonic()
+            self._clock.start(1000)
+            self._tick()
+            self.stop_btn.setEnabled(True)
+            self.stop_btn.show()
+            self.on_step(1, 0, 0, text or "در حال اتصال…")
+            self.sync_card.show()
+        else:
+            self._clock.stop()
+            self.stop_btn.hide()
+            # نتیجه چند ثانیه دیده شود، بعد پنل بسته شود
+            QTimer.singleShot(5000, lambda: self.sync_card.setVisible(not self.sync_btn.isEnabled()))
         if text:
             self.status.setText(text)
+
+    def _tick(self):
+        sec = int(time.monotonic() - self._t0)
+        self.elapsed.setText(f"زمان: {sec // 60}:{sec % 60:02d}")
+
+    def on_step(self, stage, done, total, text):
+        for i, lb in enumerate(self.step_lbls, 1):
+            if i < stage:
+                mark, obj = "✓", "PillSuccess"
+            elif i == stage:
+                mark, obj = "●", "PillAccent"
+            else:
+                mark, obj = "○", "Faint"
+            lb.setText(f"{mark}  {i}. {STEPS[i - 1]}")
+            lb.setObjectName(obj)
+            lb.style().unpolish(lb)
+            lb.style().polish(lb)
+        if stage >= 4:
+            self.progress.setRange(0, 1)
+            self.progress.setValue(1)
+        elif stage == 3 and total:
+            self.progress.setRange(0, total)
+            self.progress.setValue(done)
+        else:
+            self.progress.setRange(0, 0)
+        self.step_text.setText(text)
+
+    def stop_sync(self):
+        w = self.app.sync_worker
+        if w and w.isRunning():
+            w.cancel()
+            self.stop_btn.setEnabled(False)
+            self.step_text.setText("در حال توقف… (بعد از سفارش فعلی)")
 
     def refresh(self):
         rows = []
@@ -164,7 +253,7 @@ class OrdersPage(QWidget):
         for r in rows:
             touched += self.db.add_order_to_stock(r["id"])
         self.app.data_changed()
-        toast(self, f"{len(rows)} سفارش ({len(touched)} قلم) وارد انبار شد")
+        toast(self, f"{len(rows)} سفارش ({len(touched)} قلم) وارد انبار شد — اطلاعات و عکس قطعه‌ها از سایت لیون تکمیل می‌شود")
         self.app.enrich(list(set(touched)), quiet=True)
 
     def ignore(self):

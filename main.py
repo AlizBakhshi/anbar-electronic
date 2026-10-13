@@ -76,6 +76,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1100, 680)
         self.sync_worker = None
         self.enrich_worker = None
+        self.enrich_queue = {"ids": set(), "all": False, "price": False}
         self.cat_worker = None
 
         root = QWidget()
@@ -324,8 +325,10 @@ class MainWindow(QMainWindow):
         if not silent:
             self.show_page("orders")
         self.pages["orders"].set_syncing(True, "در حال اتصال به lionelectronic.ir…")
-        w = SyncWorker(user, pwd, silent)
+        w = SyncWorker(user, pwd, silent, self.pages["orders"].limit_value())
         w.log.connect(self.set_status)
+        w.step.connect(self.pages["orders"].on_step)
+        w.step.connect(lambda st, d, t, text: self.side_status.setText(text))
         w.need_captcha.connect(self.on_captcha)
         w.done.connect(self.on_sync_done)
         self.sync_worker = w
@@ -365,7 +368,7 @@ class MainWindow(QMainWindow):
                 touched += self.db.add_order_to_stock(i)
             self.data_changed()
             if chosen:
-                toast(self, f"{len(chosen)} سفارش ({len(touched)} قلم) وارد انبار شد")
+                toast(self, f"{len(chosen)} سفارش ({len(touched)} قلم) وارد انبار شد — اطلاعات و عکس قطعه‌ها از سایت لیون تکمیل می‌شود")
                 self.enrich(list(set(touched)), quiet=True)
 
     # ------------------------------------------------------------------ enrichment
@@ -375,18 +378,37 @@ class MainWindow(QMainWindow):
                 toast(self, "تکمیل اطلاعات از لیون فقط با روشن بودن اتصال لیون (تنظیمات) کار می‌کند")
             return
         if self.enrich_worker and self.enrich_worker.isRunning():
+            # درخواست جدید گم نشود: بعد از تمام شدن کار فعلی اجرا می‌شود
+            q = self.enrich_queue
+            if part_ids is None:
+                q["all"] = True
+            else:
+                q["ids"].update(part_ids)
+            q["price"] = q["price"] or update_price
             if not quiet:
-                toast(self, "تکمیل اطلاعات در حال انجام است…")
+                toast(self, "تکمیل اطلاعات در حال انجام است؛ این قطعه‌ها بعد از آن تکمیل می‌شوند")
+            return
+        if part_ids is not None and not part_ids:
             return
         w = EnrichWorker(part_ids, update_price=update_price)
         w.progress.connect(lambda d, t: self.side_status.setText(f"تکمیل اطلاعات قطعه‌ها از لیون: {d} از {t}") if t else None)
         w.done.connect(lambda n, err: self.on_enrich_done(n, err, quiet))
+        w.finished.connect(self.run_enrich_queue)
         self.enrich_worker = w
         w.start()
 
     def on_enrich_done(self, n, err, quiet):
         self.side_status.setText("")
         self.data_changed()
+
+    def run_enrich_queue(self):
+        """بعد از تمام شدن واقعی رشته‌ی تکمیل (finished)، درخواست‌های صف‌شده اجرا می‌شوند."""
+        q = self.enrich_queue
+        if q["all"] or q["ids"]:
+            ids = None if q["all"] else sorted(q["ids"])
+            price = q["price"]
+            self.enrich_queue = {"ids": set(), "all": False, "price": False}
+            self.enrich(ids, quiet=True, update_price=price)
         if err:
             if not quiet:
                 info(self, "خطا", f"ارتباط با سایت لیون ناموفق بود:\n{err}")
