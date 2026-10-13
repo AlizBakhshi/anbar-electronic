@@ -300,7 +300,7 @@ class DetailPanel(QFrame):
         self.ds_btn.setVisible(bool(p["datasheet"]))
         has_link = (p["purchase_link"] or "").startswith("http")
         self.buy_btn.setText("صفحه‌ی خرید" if has_link else "جستجو در لیون")
-        self.buy_btn.setVisible(has_link or appinfo.lion_enabled(self.db))
+        self.buy_btn.setVisible(has_link or appinfo.lion_enabled(self.page.db))
         specs = {}
         try:
             specs = json.loads(p["specs"] or "{}")
