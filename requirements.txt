@@ -1,0 +1,9 @@
+PySide6>=6.6
+requests
+beautifulsoup4
+lxml
+openpyxl
+qrcode
+jdatetime
+pillow
+pywin32

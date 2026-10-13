@@ -1,0 +1,10 @@
+build/
+dist/
+release/
+__pycache__/
+*.pyc
+*.db
+*.db-wal
+*.db-shm
+images/
+portable.txt
